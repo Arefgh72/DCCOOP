@@ -2,17 +2,17 @@ name: 🚀 Chain Proxy Gateway (VLESS + SS)
 
 on:
   schedule:
-    - cron: "0 */6 * * *"   # هر ۴ ساعت
-  workflow_dispatch:          # امکان اجرای دستی
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: chain-proxy-runner
-  cancel-in-progress: true    # جلوگیری از اجرای همزمان چند رانر
+  cancel-in-progress: true
 
 jobs:
   tunnel:
     runs-on: ubuntu-latest
-    timeout-minutes: 360      # حداکثر ۶ ساعت
+    timeout-minutes: 360
 
     steps:
       - name: 📦 Install base tools
@@ -85,7 +85,7 @@ jobs:
           PROXY_URL: ${{ env.PROXY_URL }}
         run: |
           python3 << 'PYEOF'
-          import os, json, base64, sys
+          import os, json, base64, sys, re
 
           url = os.environ.get("PROXY_URL", "")
           if not url:
@@ -126,32 +126,57 @@ jobs:
               })
           elif url.startswith("ss://"):
               if '@' in url[5:]:
-                  # SIP002: ss://method:password@host:port
+                  # SIP002 style (with @) – can be plain or base64 userinfo
                   tmp = url[5:]
-                  method, rest = tmp.split(':', 1)
-                  password, host_port = rest.split('@', 1)
-                  host = host_port.split(':')[0]
-                  port = int(host_port.split(':')[1].split('#')[0].split('?')[0])
+                  userinfo, host_part = tmp.split('@', 1)
+                  # try base64 decode first
+                  try:
+                      dec = base64.b64decode(userinfo).decode()
+                      if ':' in dec:
+                          method, password = dec.split(':', 1)
+                      else:
+                          raise ValueError("No colon in decoded")
+                  except Exception:
+                      # fallback: plain method:password
+                      if ':' in userinfo:
+                          method, password = userinfo.split(':', 1)
+                      else:
+                          print("Cannot parse userinfo")
+                          sys.exit(1)
+                  host = host_part.split(':')[0]
+                  port = int(host_part.split(':')[1].split('#')[0].split('?')[0])
+                  print(f"Type: Shadowsocks\nMethod: {method}\nServer: {host}:{port}")
+                  config["outbounds"].append({
+                      "protocol": "shadowsocks",
+                      "settings": {
+                          "servers": [{
+                              "address": host,
+                              "port": port,
+                              "method": method,
+                              "password": password
+                          }]
+                      }
+                  })
               else:
-                  # base64
+                  # pure base64 (no @)
                   enc = url[5:]
                   dec = base64.b64decode(enc).decode()
                   method, rest = dec.split(':', 1)
                   password, host_port = rest.split('@', 1)
                   host = host_port.split(':')[0]
                   port = int(host_port.split(':')[1])
-              print(f"Type: Shadowsocks\nMethod: {method}\nServer: {host}:{port}")
-              config["outbounds"].append({
-                  "protocol": "shadowsocks",
-                  "settings": {
-                      "servers": [{
-                          "address": host,
-                          "port": port,
-                          "method": method,
-                          "password": password
-                      }]
-                  }
-              })
+                  print(f"Type: Shadowsocks\nMethod: {method}\nServer: {host}:{port}")
+                  config["outbounds"].append({
+                      "protocol": "shadowsocks",
+                      "settings": {
+                          "servers": [{
+                              "address": host,
+                              "port": port,
+                              "method": method,
+                              "password": password
+                          }]
+                      }
+                  })
           else:
               print("Unsupported protocol")
               sys.exit(1)
