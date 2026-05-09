@@ -2,19 +2,24 @@ name: 🚀 Chain Proxy Gateway (VLESS + SS)
 
 on:
   schedule:
-    - cron: "0 */4 * * *"
-  workflow_dispatch:
+    - cron: "0 */4 * * *"   # هر ۴ ساعت
+  workflow_dispatch:          # اجرای دستی
 
 concurrency:
   group: chain-proxy-runner
-  cancel-in-progress: true
+  cancel-in-progress: true    # فقط یک رانر در هر لحظه
 
 jobs:
   tunnel:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 360      # ۶ ساعت
+    permissions:
+      contents: write         # برای push کردن فایل‌ها
 
     steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+
       - name: 📦 Install base tools
         run: |
           sudo apt-get update -qq
@@ -224,7 +229,6 @@ jobs:
                       resp = requests.request(method, real_url, headers=headers, data=body, proxies=proxies, timeout=30)
                   return Response(resp.content, status=resp.status_code, headers=dict(resp.headers))
               except Exception as e:
-                  # چاپ خطا در stderr (که به فایل لاگ می‌رود)
                   print(f"Relay ERROR for {real_url}: {e}", file=sys.stderr)
                   return {"e": str(e)}, 502
 
@@ -234,7 +238,6 @@ jobs:
               app.run(host='127.0.0.1', port=port, debug=False)
           PYEOF
 
-          # اجرای رله با خروجی مستقیم در فایل لاگ، بدون بافر کردن
           python3 -u relay.py > relay.log 2>&1 &
           RELAY_PID=$!
           sleep 3
@@ -246,10 +249,14 @@ jobs:
             exit 1
           fi
 
-      - name: 🌐 Start Pinggy Tunnel + Auto-Reconnect
+      - name: 🌐 Start Pinggy Tunnel + Auto-Reconnect (update tunnel.txt)
         run: |
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
           echo "✅ SSH key generated"
+
+          # تنظیم git برای commit
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
 
           while true; do
             echo "🔁 Starting Pinggy tunnel..."
@@ -260,12 +267,20 @@ jobs:
                 HTTP_URL=$(echo "$line" | grep -oP 'http://\S+')
                 HOST_ADDR=${HTTP_URL#http://}
                 echo "🌎 Public host: $HOST_ADDR"
+                
+                # به‌روزرسانی فایل tunnel.txt و push به ریپازیتوری
+                echo "$HOST_ADDR" > tunnel.txt
+                git add tunnel.txt
+                git commit -m "Update tunnel address" || true
+                git push origin main || true
+                
+                # (اختیاری) همچنان می‌توانید به ntfy هم بفرستید
                 curl -d "$HOST_ADDR" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
-                echo "✅ Host address sent to ntfy"
+                echo "✅ Host address pushed to repo (and sent to ntfy)"
               fi
             done &
             SSH_PID=$!
-            sleep 3300
+            sleep 3300  # ۵۵ دقیقه
             kill $SSH_PID 2>/dev/null
             sleep 2
           done &
