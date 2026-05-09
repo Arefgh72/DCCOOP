@@ -2,17 +2,17 @@ name: 🚀 Chain Proxy Gateway (VLESS + SS)
 
 on:
   schedule:
-    - cron: "0 */4 * * *"
-  workflow_dispatch:
+    - cron: "0 */4 * * *"   # هر ۴ ساعت
+  workflow_dispatch:          # امکان اجرای دستی
 
 concurrency:
   group: chain-proxy-runner
-  cancel-in-progress: true
+  cancel-in-progress: true    # جلوگیری از اجرای همزمان چند رانر
 
 jobs:
   tunnel:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 360      # حداکثر ۶ ساعت
 
     steps:
       - name: 📦 Install base tools
@@ -224,30 +224,29 @@ jobs:
           sleep 3
           echo "✅ Python relay running on :8080"
 
-      - name: 🌐 Start Pinggy Tunnel + Auto-Reconnect
+      - name: 🌐 Start Pinggy Tunnel + Auto-Reconnect (send HTTP host)
         run: |
-          # ساخت کلید SSH
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
           echo "✅ SSH key generated"
 
-          # حلقه اصلی برای تمدید تونل هر ۵۵ دقیقه
           while true; do
-            echo "🔁 Starting Pinggy TCP tunnel..."
+            echo "🔁 Starting Pinggy tunnel..."
             SSH_CMD="ssh -p 443 -R 0:127.0.0.1:8080 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 qr@a.pinggy.io"
             $SSH_CMD 2>&1 | while read line; do
               echo "$line"
-              # استخراج آدرس تونل از خروجی Pinggy
-              if echo "$line" | grep -q 'tcp://'; then
-                PUBLIC_URL=$(echo "$line" | grep -oP 'tcp://\S+')
-                echo "🌎 Public URL: $PUBLIC_URL"
-                curl -d "$PUBLIC_URL" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
-                echo "✅ Tunnel URL sent to ntfy"
+              # گرفتن خطی که با http:// شروع می‌شود
+              if echo "$line" | grep -q 'http://'; then
+                HTTP_URL=$(echo "$line" | grep -oP 'http://\S+')
+                # حذف پروتکل http://
+                HOST_ADDR=${HTTP_URL#http://}
+                echo "🌎 Public host: $HOST_ADDR"
+                # ارسال فقط host (بدون http://) به ntfy
+                curl -d "$HOST_ADDR" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
+                echo "✅ Host address sent to ntfy"
               fi
             done &
             SSH_PID=$!
-            # صبر کن ۵۵ دقیقه
             sleep 3300
-            # بکش و دوباره وصل شو
             kill $SSH_PID 2>/dev/null
             sleep 2
           done &
