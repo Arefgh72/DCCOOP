@@ -1,0 +1,134 @@
+name: 🚀 Chain Proxy Gateway
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # هر ۴ ساعت یک‌بار اجرا بشه
+  workflow_dispatch:        # بتونی دستی هم اجرا کنی
+
+concurrency:
+  group: chain-proxy-runner
+  cancel-in-progress: true  # فقط یک رانر همزمان
+
+jobs:
+  tunnel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360    # ۶ ساعت
+
+    steps:
+      - name: 📦 Install Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wget unzip jq
+
+      - name: ⬇️ Download Xray Core
+        run: |
+          wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip -o Xray-linux-64.zip -d ./xray
+          chmod +x ./xray/xray
+
+      - name: 🔍 Find Fastest Proxy & Show It
+        env:
+          SUB_LINK: "https://github.com/Arefgh72/v2ray-proxy-pars-tester-02/raw/main/output/top_500.txt"
+        run: |
+          echo "📥 Fetching proxy list..."
+          wget -q -O sub.txt "$SUB_LINK"
+          raw=$(cat sub.txt)
+          # چند لینک اول رو جدا کن
+          lines=$(echo "$raw" | head -20)
+          best_time=9999
+          best_url=""
+          while IFS= read -r line; do
+            if [[ $line == vless://* ]]; then
+              uid=$(echo "$line" | cut -d'@' -f1 | cut -d'/' -f3)
+              host=$(echo "$line" | cut -d'@' -f2 | cut -d':' -f1)
+              port=$(echo "$line" | cut -d':' -f3 | cut -d'?' -f1)
+              # تست سرعت با پینگ TCP
+              start=$(date +%s%N)
+              timeout 2 bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null
+              if [ $? -eq 0 ]; then
+                end=$(date +%s%N)
+                time_ms=$(( (end - start) / 1000000 ))
+                echo "Testing $host:$port → ${time_ms}ms"
+                if [ $time_ms -lt $best_time ]; then
+                  best_time=$time_ms
+                  best_url="$line"
+                fi
+              else
+                echo "Testing $host:$port → FAIL"
+              fi
+            fi
+          done <<< "$lines"
+          
+          if [ -z "$best_url" ]; then
+            echo "❌ No working proxy found. Exiting."
+            exit 1
+          fi
+          
+          echo "✅ FASTEST PROXY:"
+          echo "$best_url"
+          # استخراج دوباره برای نمایش و کانفیگ
+          uid=$(echo "$best_url" | cut -d'@' -f1 | cut -d'/' -f3)
+          host=$(echo "$best_url" | cut -d'@' -f2 | cut -d':' -f1)
+          port=$(echo "$best_url" | cut -d':' -f3 | cut -d'?' -f1)
+          echo "👉 UUID: $uid"
+          echo "👉 Server: $host:$port"
+          # ذخیره برای مرحله بعد
+          echo "VLESS_HOST=$host" >> $GITHUB_ENV
+          echo "VLESS_PORT=$port" >> $GITHUB_ENV
+          echo "VLESS_UUID=$uid" >> $GITHUB_ENV
+
+      - name: ⚙️ Generate Xray Config
+        run: |
+          cat > ./xray/config.json << EOF
+          {
+            "inbounds": [{
+              "port": 10808,
+              "listen": "127.0.0.1",
+              "protocol": "socks",
+              "settings": { "udp": true }
+            }],
+            "outbounds": [{
+              "protocol": "vless",
+              "settings": {
+                "vnext": [{
+                  "address": "${VLESS_HOST}",
+                  "port": ${VLESS_PORT},
+                  "users": [{ "id": "${VLESS_UUID}", "encryption": "none" }]
+                }]
+              },
+              "streamSettings": {
+                "network": "ws",
+                "security": "tls"
+              }
+            }]
+          }
+          EOF
+
+      - name: 🚀 Start Xray
+        run: |
+          ./xray/xray -c ./xray/config.json &
+          sleep 3
+
+      - name: 🌐 Start Ngrok Tunnel
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+        run: |
+          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+          tar -xzf ngrok-v3-stable-linux-amd64.tgz
+          ./ngrok config add-authtoken $NGROK_AUTHTOKEN
+          ./ngrok tcp 10808 --log=stdout > ngrok.log 2>&1 &
+          sleep 5
+          # استخراج آدرس عمومی
+          PUBLIC_URL=$(grep -oP 'url=tcp://\K[^ ]+' ngrok.log | head -1)
+          echo "🌎 Public URL: $PUBLIC_URL"
+          # ارسال به ntfy
+          curl -d "$PUBLIC_URL" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
+          echo "✅ Tunnel URL sent to ntfy.sh/arefgh_dccoop_tunnel_7x9k"
+
+      - name: ⏳ Keep Alive (6h)
+        run: |
+          echo "🟢 TUNNEL ACTIVE — will shutdown after 6 hours."
+          while true; do
+            sleep 60
+            echo "   ."
+          done
