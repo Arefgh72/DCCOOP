@@ -1,24 +1,24 @@
-name: 🚀 Chain Proxy Gateway
+name: 🚀 Chain Proxy Gateway (VLESS + SS)
 
 on:
   schedule:
-    - cron: "0 */6 * * *"   # هر ۴ ساعت یک‌بار اجرا بشه
-  workflow_dispatch:        # بتونی دستی هم اجرا کنی
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: chain-proxy-runner
-  cancel-in-progress: true  # فقط یک رانر همزمان
+  cancel-in-progress: true
 
 jobs:
   tunnel:
     runs-on: ubuntu-latest
-    timeout-minutes: 360    # ۶ ساعت
+    timeout-minutes: 360
 
     steps:
       - name: 📦 Install Tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq wget unzip jq
+          sudo apt-get install -y -qq wget unzip jq python3 python3-pip
 
       - name: ⬇️ Download Xray Core
         run: |
@@ -26,23 +26,40 @@ jobs:
           unzip -o Xray-linux-64.zip -d ./xray
           chmod +x ./xray/xray
 
-      - name: 🔍 Find Fastest Proxy & Show It
+      - name: 🔍 Find Fastest Proxy
         env:
           SUB_LINK: "https://github.com/Arefgh72/v2ray-proxy-pars-tester-02/raw/main/output/top_500.txt"
         run: |
           echo "📥 Fetching proxy list..."
           wget -q -O sub.txt "$SUB_LINK"
           raw=$(cat sub.txt)
-          # چند لینک اول رو جدا کن
-          lines=$(echo "$raw" | head -20)
+          lines=$(echo "$raw" | head -30)
           best_time=9999
           best_url=""
           while IFS= read -r line; do
-            if [[ $line == vless://* ]]; then
-              uid=$(echo "$line" | cut -d'@' -f1 | cut -d'/' -f3)
-              host=$(echo "$line" | cut -d'@' -f2 | cut -d':' -f1)
-              port=$(echo "$line" | cut -d':' -f3 | cut -d'?' -f1)
-              # تست سرعت با پینگ TCP
+            if [[ $line == vless://* || $line == ss://* ]]; then
+              # استخراج host و port از هر دو نوع
+              if [[ $line == vless://* ]]; then
+                host=$(echo "$line" | cut -d'@' -f2 | cut -d':' -f1)
+                port=$(echo "$line" | cut -d':' -f3 | cut -d'?' -f1)
+              elif [[ $line == ss://* ]]; then
+                # ممکنه base64 یا SIP002 باشه
+                if [[ $line == ss://*@* ]]; then
+                  # SIP002: ss://method:password@host:port
+                  tmp=${line#ss://}
+                  hostport=${tmp#*@}
+                  host=$(echo "$hostport" | cut -d':' -f1)
+                  port=$(echo "$hostport" | cut -d':' -f2 | cut -d'#' -f1 | cut -d'?' -f1)
+                else
+                  # base64: ss://base64(...)
+                  enc=${line#ss://}
+                  dec=$(echo "$enc" | base64 -d 2>/dev/null)
+                  hostport=${dec#*@}
+                  host=$(echo "$hostport" | cut -d':' -f1)
+                  port=$(echo "$hostport" | cut -d':' -f2)
+                fi
+              fi
+              # تست TCP
               start=$(date +%s%N)
               timeout 2 bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null
               if [ $? -eq 0 ]; then
@@ -58,56 +75,140 @@ jobs:
               fi
             fi
           done <<< "$lines"
-          
+
           if [ -z "$best_url" ]; then
             echo "❌ No working proxy found. Exiting."
             exit 1
           fi
-          
+
           echo "✅ FASTEST PROXY:"
           echo "$best_url"
-          # استخراج دوباره برای نمایش و کانفیگ
-          uid=$(echo "$best_url" | cut -d'@' -f1 | cut -d'/' -f3)
-          host=$(echo "$best_url" | cut -d'@' -f2 | cut -d':' -f1)
-          port=$(echo "$best_url" | cut -d':' -f3 | cut -d'?' -f1)
-          echo "👉 UUID: $uid"
-          echo "👉 Server: $host:$port"
-          # ذخیره برای مرحله بعد
-          echo "VLESS_HOST=$host" >> $GITHUB_ENV
-          echo "VLESS_PORT=$port" >> $GITHUB_ENV
-          echo "VLESS_UUID=$uid" >> $GITHUB_ENV
+          echo "PROXY_URL=$best_url" >> $GITHUB_ENV
 
-      - name: ⚙️ Generate Xray Config
+      - name: ⚙️ Generate Xray Config (VLESS or Shadowsocks)
         run: |
-          cat > ./xray/config.json << EOF
-          {
-            "inbounds": [{
-              "port": 10808,
-              "listen": "127.0.0.1",
-              "protocol": "socks",
-              "settings": { "udp": true }
-            }],
-            "outbounds": [{
-              "protocol": "vless",
-              "settings": {
-                "vnext": [{
-                  "address": "${VLESS_HOST}",
-                  "port": ${VLESS_PORT},
-                  "users": [{ "id": "${VLESS_UUID}", "encryption": "none" }]
-                }]
-              },
-              "streamSettings": {
-                "network": "ws",
-                "security": "tls"
-              }
-            }]
-          }
-          EOF
+          url="${{ env.PROXY_URL }}"
+          if [[ $url == vless://* ]]; then
+            uid=$(echo "$url" | cut -d'@' -f1 | cut -d'/' -f3)
+            host=$(echo "$url" | cut -d'@' -f2 | cut -d':' -f1)
+            port=$(echo "$url" | cut -d':' -f3 | cut -d'?' -f1)
+            echo "Type: VLESS"
+            echo "UUID: $uid"
+            echo "Server: $host:$port"
+            cat > ./xray/config.json << EOF
+{
+  "inbounds": [{
+    "port": 10808,
+    "listen": "127.0.0.1",
+    "protocol": "socks",
+    "settings": {"udp": true}
+  }],
+  "outbounds": [{
+    "protocol": "vless",
+    "settings": {
+      "vnext": [{
+        "address": "$host",
+        "port": $port,
+        "users": [{"id": "$uid", "encryption": "none"}]
+      }]
+    },
+    "streamSettings": {
+      "network": "ws",
+      "security": "tls"
+    }
+  }]
+}
+EOF
+          elif [[ $url == ss://* ]]; then
+            if [[ $url == ss://*@* ]]; then
+              tmp=${url#ss://}
+              method=$(echo "$tmp" | cut -d':' -f1)
+              rest=${tmp#*:}
+              password=$(echo "$rest" | cut -d'@' -f1)
+              hostport=${rest#*@}
+              host=$(echo "$hostport" | cut -d':' -f1)
+              port=$(echo "$hostport" | cut -d':' -f2 | cut -d'#' -f1 | cut -d'?' -f1)
+            else
+              enc=${url#ss://}
+              dec=$(echo "$enc" | base64 -d 2>/dev/null)
+              method=$(echo "$dec" | cut -d':' -f1)
+              password=$(echo "$dec" | cut -d':' -f2 | cut -d'@' -f1)
+              hostport=${dec#*@}
+              host=$(echo "$hostport" | cut -d':' -f1)
+              port=$(echo "$hostport" | cut -d':' -f2)
+            fi
+            echo "Type: Shadowsocks"
+            echo "Method: $method"
+            echo "Server: $host:$port"
+            cat > ./xray/config.json << EOF
+{
+  "inbounds": [{
+    "port": 10808,
+    "listen": "127.0.0.1",
+    "protocol": "socks",
+    "settings": {"udp": true}
+  }],
+  "outbounds": [{
+    "protocol": "shadowsocks",
+    "settings": {
+      "servers": [{
+        "address": "$host",
+        "port": $port,
+        "method": "$method",
+        "password": "$password"
+      }]
+    }
+  }]
+}
+EOF
+          fi
+          echo "📄 Xray config created."
 
       - name: 🚀 Start Xray
         run: |
           ./xray/xray -c ./xray/config.json &
           sleep 3
+
+      - name: 🐍 Start Python Relay
+        run: |
+          pip3 install requests[socks] flask
+          cat > relay.py << 'PYEOF'
+import json, requests, sys
+from flask import Flask, request, Response
+
+app = Flask(__name__)
+
+SOCKS_PROXY = "socks5://127.0.0.1:10808"
+
+@app.route('/', methods=['POST'])
+def relay():
+    data = request.get_json()
+    if not data:
+        return {"e": "invalid json"}, 400
+    real_url = data.get('u')
+    method = data.get('m', 'GET').upper()
+    headers = data.get('h', {})
+    body = data.get('b', None)
+    content_type = data.get('ct', None)
+
+    proxies = dict(http=SOCKS_PROXY, https=SOCKS_PROXY)
+    try:
+        if method == 'GET':
+            resp = requests.get(real_url, headers=headers, proxies=proxies, timeout=30)
+        else:
+            resp = requests.request(method, real_url, headers=headers, data=body, proxies=proxies, timeout=30)
+        return Response(resp.content, status=resp.status_code, headers=dict(resp.headers))
+    except Exception as e:
+        return {"e": str(e)}, 502
+
+if __name__ == '__main__':
+    import os
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='127.0.0.1', port=port, debug=False)
+PYEOF
+          python3 relay.py &
+          sleep 3
+          echo "✅ Python relay running on :8080"
 
       - name: 🌐 Start Ngrok Tunnel
         env:
@@ -116,19 +217,14 @@ jobs:
           wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
           tar -xzf ngrok-v3-stable-linux-amd64.tgz
           ./ngrok config add-authtoken $NGROK_AUTHTOKEN
-          ./ngrok tcp 10808 --log=stdout > ngrok.log 2>&1 &
+          ./ngrok tcp 8080 --log=stdout > ngrok.log 2>&1 &
           sleep 5
-          # استخراج آدرس عمومی
           PUBLIC_URL=$(grep -oP 'url=tcp://\K[^ ]+' ngrok.log | head -1)
           echo "🌎 Public URL: $PUBLIC_URL"
-          # ارسال به ntfy
           curl -d "$PUBLIC_URL" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
-          echo "✅ Tunnel URL sent to ntfy.sh/arefgh_dccoop_tunnel_7x9k"
+          echo "✅ Tunnel URL sent to ntfy"
 
       - name: ⏳ Keep Alive (6h)
         run: |
-          echo "🟢 TUNNEL ACTIVE — will shutdown after 6 hours."
-          while true; do
-            sleep 60
-            echo "   ."
-          done
+          echo "🟢 TUNNEL ACTIVE. Runner will shutdown in 6 hours."
+          while true; do sleep 60; done
