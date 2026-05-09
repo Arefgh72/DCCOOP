@@ -2,17 +2,17 @@ name: 🚀 Chain Proxy Gateway (VLESS + SS)
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
-  workflow_dispatch:
+    - cron: "0 */4 * * *"   # هر ۴ ساعت
+  workflow_dispatch:          # امکان اجرای دستی
 
 concurrency:
   group: chain-proxy-runner
-  cancel-in-progress: true
+  cancel-in-progress: true    # جلوگیری از اجرای همزمان چند رانر
 
 jobs:
   tunnel:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 360      # حداکثر ۶ ساعت
 
     steps:
       - name: 📦 Install base tools
@@ -85,7 +85,7 @@ jobs:
           PROXY_URL: ${{ env.PROXY_URL }}
         run: |
           python3 << 'PYEOF'
-          import os, json, base64, sys, re
+          import os, json, base64, sys
 
           url = os.environ.get("PROXY_URL", "")
           if not url:
@@ -103,8 +103,7 @@ jobs:
           }
 
           if url.startswith("vless://"):
-              # vless://uuid@host:port?...
-              rest = url[8:]  # remove vless://
+              rest = url[8:]
               uuid = rest.split('@')[0]
               host_port = rest.split('@')[1]
               host = host_port.split(':')[0]
@@ -126,18 +125,15 @@ jobs:
               })
           elif url.startswith("ss://"):
               if '@' in url[5:]:
-                  # SIP002 style (with @) – can be plain or base64 userinfo
                   tmp = url[5:]
                   userinfo, host_part = tmp.split('@', 1)
-                  # try base64 decode first
                   try:
                       dec = base64.b64decode(userinfo).decode()
                       if ':' in dec:
                           method, password = dec.split(':', 1)
                       else:
-                          raise ValueError("No colon in decoded")
-                  except Exception:
-                      # fallback: plain method:password
+                          raise ValueError("No colon")
+                  except:
                       if ':' in userinfo:
                           method, password = userinfo.split(':', 1)
                       else:
@@ -158,7 +154,6 @@ jobs:
                       }
                   })
               else:
-                  # pure base64 (no @)
                   enc = url[5:]
                   dec = base64.b64decode(enc).decode()
                   method, rest = dec.split(':', 1)
@@ -229,7 +224,7 @@ jobs:
           sleep 3
           echo "✅ Python relay running on :8080"
 
-      - name: 🌐 Start Ngrok Tunnel
+      - name: 🌐 Start Ngrok Tunnel and get URL
         env:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
@@ -237,9 +232,17 @@ jobs:
           tar -xzf ngrok-v3-stable-linux-amd64.tgz
           ./ngrok config add-authtoken $NGROK_AUTHTOKEN
           ./ngrok tcp 8080 --log=stdout > ngrok.log 2>&1 &
-          sleep 5
-          PUBLIC_URL=$(grep -oP 'url=tcp://\K[^ ]+' ngrok.log | head -1)
+          # صبر کن تا API محلی ngrok آماده بشه
+          for i in {1..20}; do
+            sleep 1
+            if curl -s http://127.0.0.1:4040/api/tunnels | jq -e '.tunnels[0].public_url' > /dev/null 2>&1; then
+              break
+            fi
+          done
+          # آدرس عمومی رو از API بگیر
+          PUBLIC_URL=$(curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url')
           echo "🌎 Public URL: $PUBLIC_URL"
+          # ارسال به ntfy
           curl -d "$PUBLIC_URL" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
           echo "✅ Tunnel URL sent to ntfy"
 
