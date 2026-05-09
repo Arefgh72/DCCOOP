@@ -2,23 +2,23 @@ name: 🚀 Chain Proxy Gateway (VLESS + SS)
 
 on:
   schedule:
-    - cron: "0 */4 * * *"   # هر ۴ ساعت
-  workflow_dispatch:          # امکان اجرای دستی
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: chain-proxy-runner
-  cancel-in-progress: true    # فقط یک رانر همزمان
+  cancel-in-progress: true
 
 jobs:
   tunnel:
     runs-on: ubuntu-latest
-    timeout-minutes: 360      # حداکثر ۶ ساعت
+    timeout-minutes: 360
 
     steps:
       - name: 📦 Install base tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq wget unzip jq python3 python3-pip
+          sudo apt-get install -y -qq wget unzip jq python3 python3-pip curl openssh-client
 
       - name: ⬇️ Download Xray Core
         run: |
@@ -224,30 +224,33 @@ jobs:
           sleep 3
           echo "✅ Python relay running on :8080"
 
-      - name: 🌐 Start Ngrok Tunnel and wait for URL
-        env:
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+      - name: 🌐 Start Pinggy Tunnel + Auto-Reconnect
         run: |
-          wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-          tar -xzf ngrok-v3-stable-linux-amd64.tgz
-          ./ngrok config add-authtoken $NGROK_AUTHTOKEN
-          ./ngrok tcp 8080 --log=stdout > ngrok.log 2>&1 &
-          echo "Waiting for ngrok API..."
-          for i in {1..30}; do
-            if curl -s http://127.0.0.1:4040/api/tunnels 2>/dev/null | jq -e '.tunnels[0].public_url' >/dev/null 2>&1; then
-              break
-            fi
-            sleep 1
-          done
-          PUBLIC_URL=$(curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url')
-          if [ -z "$PUBLIC_URL" ]; then
-            echo "❌ Failed to get ngrok URL. Dumping ngrok.log:"
-            cat ngrok.log
-            exit 1
-          fi
-          echo "🌎 Public URL: $PUBLIC_URL"
-          curl -d "$PUBLIC_URL" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
-          echo "✅ Tunnel URL sent to ntfy"
+          # ساخت کلید SSH
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
+          echo "✅ SSH key generated"
+
+          # حلقه اصلی برای تمدید تونل هر ۵۵ دقیقه
+          while true; do
+            echo "🔁 Starting Pinggy TCP tunnel..."
+            SSH_CMD="ssh -p 443 -R 0:127.0.0.1:8080 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 qr@a.pinggy.io"
+            $SSH_CMD 2>&1 | while read line; do
+              echo "$line"
+              # استخراج آدرس تونل از خروجی Pinggy
+              if echo "$line" | grep -q 'tcp://'; then
+                PUBLIC_URL=$(echo "$line" | grep -oP 'tcp://\S+')
+                echo "🌎 Public URL: $PUBLIC_URL"
+                curl -d "$PUBLIC_URL" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
+                echo "✅ Tunnel URL sent to ntfy"
+              fi
+            done &
+            SSH_PID=$!
+            # صبر کن ۵۵ دقیقه
+            sleep 3300
+            # بکش و دوباره وصل شو
+            kill $SSH_PID 2>/dev/null
+            sleep 2
+          done &
 
       - name: ⏳ Keep Alive (6h max)
         run: |
