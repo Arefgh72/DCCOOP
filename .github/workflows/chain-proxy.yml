@@ -288,7 +288,7 @@ jobs:
       - name: 📋 Dump Relay Log (after a short wait)
         run: |
           echo "⏳ Waiting 30 seconds for some requests to arrive..."
-          sleep 30
+          sleep 60
           echo "📄 Relay log contents:"
           cat relay.log || echo "(no log yet)"
 
