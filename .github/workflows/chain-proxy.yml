@@ -186,23 +186,22 @@ jobs:
           ./xray/xray -c ./xray/config.json &
           sleep 3
 
-      - name: 🐍 Install PySocks and start Python relay (with logging)
+      - name: 🐍 Start Python relay (with unbuffered logging)
         run: |
           echo "📦 Installing PySocks..."
           pip3 install --user pysocks flask requests
           python3 -c "import socks"
           echo "✅ PySocks ready."
 
-          echo "🧪 Testing SOCKS5 proxy..."
+          echo "🧪 Quick SOCKS5 test..."
           if curl -s --max-time 5 --socks5 127.0.0.1:10808 http://example.com >/dev/null; then
             echo "✅ SOCKS5 test passed."
           else
             echo "❌ SOCKS5 test failed, but continuing..."
           fi
 
-          # رله را طوری اجرا می‌کنیم که stdout و stderr در relay.log ذخیره شود
           cat > relay.py << 'PYEOF'
-          import json, requests, sys
+          import sys, json, requests
           from flask import Flask, request, Response
 
           app = Flask(__name__)
@@ -225,7 +224,7 @@ jobs:
                       resp = requests.request(method, real_url, headers=headers, data=body, proxies=proxies, timeout=30)
                   return Response(resp.content, status=resp.status_code, headers=dict(resp.headers))
               except Exception as e:
-                  # خطا را هم در پاسخ و هم در console (فایل لاگ) چاپ کن
+                  # چاپ خطا در stderr (که به فایل لاگ می‌رود)
                   print(f"Relay ERROR for {real_url}: {e}", file=sys.stderr)
                   return {"e": str(e)}, 502
 
@@ -234,11 +233,20 @@ jobs:
               port = int(os.environ.get("PORT", 8080))
               app.run(host='127.0.0.1', port=port, debug=False)
           PYEOF
-          python3 relay.py > relay.log 2>&1 &
-          sleep 3
-          echo "✅ Python relay running on :8080 (logs: relay.log)"
 
-      - name: 🌐 Start Pinggy Tunnel + Auto-Reconnect (send HTTP host)
+          # اجرای رله با خروجی مستقیم در فایل لاگ، بدون بافر کردن
+          python3 -u relay.py > relay.log 2>&1 &
+          RELAY_PID=$!
+          sleep 3
+          if kill -0 $RELAY_PID 2>/dev/null; then
+            echo "✅ Relay running (PID $RELAY_PID)."
+          else
+            echo "❌ Relay failed to start!"
+            cat relay.log
+            exit 1
+          fi
+
+      - name: 🌐 Start Pinggy Tunnel + Auto-Reconnect
         run: |
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
           echo "✅ SSH key generated"
@@ -262,31 +270,12 @@ jobs:
             sleep 2
           done &
 
-      - name: 🩺 Test Relay via Pinggy (diagnostic)
+      - name: 📋 Dump Relay Log (after a short wait)
         run: |
-          # صبر می‌کنیم تا آدرس در ntfy بنشیند (کمی صبر لازم است)
-          sleep 10
-          # با curl یک درخواست JSON به همان host که در ntfy گذاشته شده می‌فرستیم
-          # اما آدرس را از ntfy می‌خوانیم
-          TUNNEL_HOST=$(curl -s "https://ntfy.sh/arefgh_dccoop_tunnel_7x9k/json" | jq -r '.[-1].message // empty')
-          if [ -z "$TUNNEL_HOST" ]; then
-            echo "❌ Could not get tunnel URL from ntfy"
-            exit 1
-          fi
-          echo "🏥 Testing relay at http://$TUNNEL_HOST"
-          # یک درخواست تستی: GET http://example.com
-          RESP=$(curl -s -w "\n%{http_code}" --max-time 10 -X POST "http://$TUNNEL_HOST" \
-            -H "Content-Type: application/json" \
-            -d '{"u":"http://example.com","m":"GET","h":{}}')
-          HTTP_CODE=$(echo "$RESP" | tail -1)
-          BODY=$(echo "$RESP" | sed '$d')
-          echo "📡 Test response code: $HTTP_CODE"
-          echo "📄 Test response body (truncated):"
-          echo "$BODY" | head -c 500
-          echo
-          # حالا لاگ رله را چاپ کن
-          echo "📋 Relay log:"
-          cat relay.log
+          echo "⏳ Waiting 30 seconds for some requests to arrive..."
+          sleep 30
+          echo "📄 Relay log contents:"
+          cat relay.log || echo "(no log yet)"
 
       - name: ⏳ Keep Alive (6h max)
         run: |
