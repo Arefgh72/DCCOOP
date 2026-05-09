@@ -191,7 +191,7 @@ jobs:
           ./xray/xray -c ./xray/config.json &
           sleep 3
 
-      - name: 🐍 Start Python relay (with unbuffered logging)
+      - name: 🐍 Start Python relay (listening on 0.0.0.0)
         run: |
           echo "📦 Installing PySocks..."
           pip3 install --user pysocks flask requests
@@ -235,10 +235,10 @@ jobs:
           if __name__ == '__main__':
               import os
               port = int(os.environ.get("PORT", 8080))
-              app.run(host='127.0.0.1', port=port, debug=False)
+              # گوش دادن روی همهٔ رابط‌ها
+              app.run(host='0.0.0.0', port=port, debug=False)
           PYEOF
 
-          # لاگ رله را با --append نگه می‌داریم که با ریستارت پاک نشود
           python3 -u relay.py >> relay.log 2>&1 &
           RELAY_PID=$!
           sleep 3
@@ -250,7 +250,7 @@ jobs:
             exit 1
           fi
 
-      - name: 🌐 Start Pinggy Tunnel + Auto-Reconnect (with relay & xray watchdog)
+      - name: 🌐 Start Pinggy Tunnel + Auto-Reconnect (with external health check)
         run: |
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
           echo "✅ SSH key generated"
@@ -258,62 +258,19 @@ jobs:
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
 
-          # تابع کمکی: تست سلامت رله (بررسی می‌کند که Flask زنده است و به درخواست پاسخ ۲۰۰ می‌دهد)
-          check_relay() {
-            local code
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 -X POST http://127.0.0.1:8080 \
+          # تابع کمکی: تست سلامت رله از طریق آدرس خارجی
+          check_relay_external() {
+            local host=$1
+            curl -s --max-time 5 -X POST "http://$host" \
               -H "Content-Type: application/json" \
-              -d '{"u":"http://example.com","m":"GET","h":{}}')
-            [ "$code" = "200" ]
-          }
-
-          # تابع کمکی: تست اینکه آیا Xray (پروکسی SOCKS) کار می‌کند
-          check_xray() {
-            curl -s --max-time 5 --socks5 127.0.0.1:10808 http://example.com | grep -q '<title>Example Domain</title>'
+              -d '{"u":"http://example.com","m":"GET","h":{}}' \
+              | grep -q '<title>Example Domain</title>'
           }
 
           while true; do
             echo "🔁 Starting Pinggy tunnel..."
 
-            # ۱. مطمئن می‌شویم Xray زنده است
-            if check_xray; then
-              echo "✅ Xray is healthy."
-            else
-              echo "❌ Xray SOCKS failed. Restarting Xray..."
-              pkill -f "./xray/xray" 2>/dev/null
-              sleep 1
-              ./xray/xray -c ./xray/config.json &
-              sleep 3
-              if ! check_xray; then
-                echo "❌ Xray still dead. Dumping Xray log if any:"
-                cat nohup.out 2>/dev/null || echo "(no log)"
-                exit 1
-              fi
-              echo "✅ Xray restarted."
-            fi
-
-            # ۲. مطمئن می‌شویم رله زنده است (اگر نبود با Xray سالم ریست می‌شود)
-            if check_relay; then
-              echo "✅ Relay is healthy."
-            else
-              echo "❌ Relay is NOT responding. Restarting relay..."
-              # یک نسخهٔ پشتیبان از لاگ قبلی ذخیره کن
-              [ -f relay.log ] && cp relay.log relay_previous.log
-              pkill -f "python3.*relay.py" 2>/dev/null
-              sleep 1
-              python3 -u relay.py >> relay.log 2>&1 &
-              sleep 3
-              if ! check_relay; then
-                echo "❌ Relay still dead. Dumping current relay.log:"
-                cat relay.log
-                echo "📋 Previous relay log (if any):"
-                [ -f relay_previous.log ] && cat relay_previous.log
-                exit 1
-              fi
-              echo "✅ Relay restarted and healthy."
-            fi
-
-            # ۳. تونل Pinggy را اجرا کن
+            # SSH tunnel با فوروارد به 127.0.0.1:8080 (رله روی 0.0.0.0 گوش می‌ده)
             SSH_CMD="ssh -p 443 -R 0:127.0.0.1:8080 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 qr@a.pinggy.io"
             $SSH_CMD 2>&1 | while read line; do
               echo "$line"
@@ -321,26 +278,47 @@ jobs:
                 HTTP_URL=$(echo "$line" | grep -oP 'http://\S+')
                 HOST_ADDR=${HTTP_URL#http://}
                 echo "🌎 Public host: $HOST_ADDR"
-                
-                # به‌روزرسانی فایل tunnel.txt و push به ریپازیتوری
+
+                # تست خارجی: آیا رله از طریق تونل پاسخ می‌دهد؟
+                if check_relay_external "$HOST_ADDR"; then
+                  echo "✅ External relay check passed."
+                else
+                  echo "❌ Relay not reachable externally. Restarting relay..."
+                  pkill -f "python3.*relay.py" 2>/dev/null
+                  sleep 1
+                  python3 -u relay.py >> relay.log 2>&1 &
+                  sleep 3
+                  if ! check_relay_external "$HOST_ADDR"; then
+                    echo "❌ Still not reachable. Dumping relay.log:"
+                    cat relay.log
+                    exit 1
+                  fi
+                  echo "✅ Relay restarted and externally reachable."
+                fi
+
+                # به‌روزرسانی فایل tunnel.txt و push
                 echo "$HOST_ADDR" > tunnel.txt
                 git add tunnel.txt
                 git commit -m "Update tunnel address" || true
                 git push origin main || true
-                
+
                 curl -d "$HOST_ADDR" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
                 echo "✅ Host address pushed to repo (and sent to ntfy)"
               fi
             done &
             SSH_PID=$!
 
-            # ۴. حلقهٔ نگهبان: هر ۲ دقیقه Xray و رله را چک کن
+            # حلقهٔ نگهبان: هر ۲ دقیقه سلامت خارجی را چک کن
             while kill -0 $SSH_PID 2>/dev/null; do
               sleep 120
-              if ! check_xray || ! check_relay; then
-                echo "⚠️ Xray or Relay died. Killing tunnel for restart..."
-                kill $SSH_PID 2>/dev/null
-                break
+              # برای چک کردن آدرس فعلی، آدرس را از tunnel.txt بخوانیم
+              if [ -f tunnel.txt ]; then
+                TUNNEL_HOST=$(cat tunnel.txt)
+                if ! check_relay_external "$TUNNEL_HOST"; then
+                  echo "⚠️ Relay became unreachable. Killing tunnel for restart..."
+                  kill $SSH_PID 2>/dev/null
+                  break
+                fi
               fi
             done
             wait $SSH_PID 2>/dev/null
