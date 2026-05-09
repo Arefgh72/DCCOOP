@@ -2,17 +2,17 @@ name: 🚀 Chain Proxy Gateway (VLESS + SS)
 
 on:
   schedule:
-    - cron: "0 */4 * * *"   # هر ۴ ساعت
-  workflow_dispatch:          # امکان اجرای دستی
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: chain-proxy-runner
-  cancel-in-progress: true    # جلوگیری از اجرای همزمان چند رانر
+  cancel-in-progress: true
 
 jobs:
   tunnel:
     runs-on: ubuntu-latest
-    timeout-minutes: 360      # حداکثر ۶ ساعت
+    timeout-minutes: 360
 
     steps:
       - name: 📦 Install base tools
@@ -186,15 +186,28 @@ jobs:
           ./xray/xray -c ./xray/config.json &
           sleep 3
 
-      - name: 🐍 Start Python HTTP relay (uses SOCKS)
+      - name: 🐍 Install PySocks and start Python relay
         run: |
-          pip3 install requests[socks] flask > /dev/null 2>&1
+          echo "📦 Installing PySocks..."
+          pip3 install --user pysocks flask requests   # نصب بدون مخفی کردن خروجی
+          python3 -c "import socks"   # تست سریع
+          echo "✅ PySocks ready."
+
+          # تست اینکه SOCKS5 کار می‌کند
+          echo "🧪 Testing SOCKS5 proxy..."
+          if curl -s --max-time 5 --socks5 127.0.0.1:10808 http://example.com >/dev/null; then
+            echo "✅ SOCKS5 test passed."
+          else
+            echo "❌ SOCKS5 test failed, but continuing anyway..."
+          fi
+
           cat > relay.py << 'PYEOF'
           import json, requests
           from flask import Flask, request, Response
 
           app = Flask(__name__)
-          SOCKS_PROXY = "socks5://127.0.0.1:10808"
+          # استفاده از socks5h برای وادار کردن DNS از طریق پروکسی
+          SOCKS_PROXY = "socks5h://127.0.0.1:10808"
 
           @app.route('/', methods=['POST'])
           def relay():
@@ -213,6 +226,8 @@ jobs:
                       resp = requests.request(method, real_url, headers=headers, data=body, proxies=proxies, timeout=30)
                   return Response(resp.content, status=resp.status_code, headers=dict(resp.headers))
               except Exception as e:
+                  # لاگ کردن خطا برای دیباگ (در لاگ workflow دیده می‌شود)
+                  print(f"Relay ERROR: {e}")
                   return {"e": str(e)}, 502
 
           if __name__ == '__main__':
@@ -234,13 +249,10 @@ jobs:
             SSH_CMD="ssh -p 443 -R 0:127.0.0.1:8080 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 qr@a.pinggy.io"
             $SSH_CMD 2>&1 | while read line; do
               echo "$line"
-              # گرفتن خطی که با http:// شروع می‌شود
               if echo "$line" | grep -q 'http://'; then
                 HTTP_URL=$(echo "$line" | grep -oP 'http://\S+')
-                # حذف پروتکل http://
                 HOST_ADDR=${HTTP_URL#http://}
                 echo "🌎 Public host: $HOST_ADDR"
-                # ارسال فقط host (بدون http://) به ntfy
                 curl -d "$HOST_ADDR" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
                 echo "✅ Host address sent to ntfy"
               fi
