@@ -235,7 +235,6 @@ jobs:
           if __name__ == '__main__':
               import os
               port = int(os.environ.get("PORT", 8080))
-              # گوش دادن روی همهٔ رابط‌ها
               app.run(host='0.0.0.0', port=port, debug=False)
           PYEOF
 
@@ -250,53 +249,50 @@ jobs:
             exit 1
           fi
 
-      - name: 🌐 Start Serveo Tunnel + Auto-Reconnect
+      - name: 🌐 Start Cloudflare Tunnel (TryCloudflare)
         run: |
-          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
-          echo "✅ SSH key generated"
+          # دانلود cloudflared
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
 
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
 
-          while true; do
-            echo "🔁 Starting Serveo tunnel..."
-            SSH_CMD="ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R 80:127.0.0.1:8080 serveo.net"
-            $SSH_CMD 2>&1 | while read line; do
-              echo "$line"
-              if echo "$line" | grep -q 'Forwarding HTTP'; then
-                # الگوی معمول: Forwarding HTTP traffic from https://xxxx.serveo.net
-                HOST_ADDR=$(echo "$line" | grep -oP 'https://\K[^ ]+')
-                echo "🌎 Public host: $HOST_ADDR"
-                
-                # تست خارجی
-                if curl -s --max-time 5 -X POST "http://$HOST_ADDR" \
-                  -H "Content-Type: application/json" \
-                  -d '{"u":"http://example.com","m":"GET","h":{}}' \
-                  | grep -q '<title>Example Domain</title>'; then
-                  echo "✅ External relay check passed."
-                else
-                  echo "❌ Relay not reachable via Serveo. Restarting relay..."
-                  pkill -f "python3.*relay.py" 2>/dev/null
-                  sleep 1
-                  python3 -u relay.py >> relay.log 2>&1 &
-                  sleep 3
-                fi
-
-                # به‌روزرسانی tunnel.txt و push به ریپازیتوری
-                echo "$HOST_ADDR" > tunnel.txt
-                git add tunnel.txt
-                git commit -m "Update tunnel address" || true
-                git push origin main || true
-                
-                curl -d "$HOST_ADDR" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
-                echo "✅ Host address pushed to repo (and sent to ntfy)"
+          # اجرای تونل و استخراج hostname
+          ./cloudflared-linux-amd64 tunnel --url http://localhost:8080 2>&1 | while read line; do
+            echo "$line"
+            if echo "$line" | grep -q 'trycloudflare.com'; then
+              HOST_ADDR=$(echo "$line" | grep -oP 'https://\K[^ ]+\.trycloudflare\.com')
+              echo "🌎 Public host: $HOST_ADDR"
+              
+              # تست خارجی
+              if curl -s --max-time 10 -X POST "https://$HOST_ADDR" \
+                -H "Content-Type: application/json" \
+                -d '{"u":"http://example.com","m":"GET","h":{}}' \
+                | grep -q '<title>Example Domain</title>'; then
+                echo "✅ External relay check passed."
+              else
+                echo "❌ Relay not reachable externally. Restarting relay..."
+                pkill -f "python3.*relay.py" 2>/dev/null
+                sleep 1
+                python3 -u relay.py >> relay.log 2>&1 &
+                sleep 3
               fi
-            done &
-            SSH_PID=$!
-            sleep 3300
-            kill $SSH_PID 2>/dev/null
-            sleep 2
+
+              # به‌روزرسانی tunnel.txt و push
+              echo "$HOST_ADDR" > tunnel.txt
+              git add tunnel.txt
+              git commit -m "Update tunnel address" || true
+              git push origin main || true
+              
+              curl -d "$HOST_ADDR" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
+              echo "✅ Host address pushed to repo (and sent to ntfy)"
+            fi
           done &
+          CLOUDFLARED_PID=$!
+          sleep 3300  # ۵۵ دقیقه
+          kill $CLOUDFLARED_PID 2>/dev/null
+          sleep 2
 
       - name: 📋 Dump Relay Log (after a short wait)
         run: |
