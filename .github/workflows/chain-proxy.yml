@@ -191,19 +191,12 @@ jobs:
           ./xray/xray -c ./xray/config.json &
           sleep 3
 
-      - name: 🐍 Start Python relay (listening on all interfaces)
+      - name: 🐍 Start Python relay (listening on 0.0.0.0)
         run: |
           echo "📦 Installing PySocks..."
           pip3 install --user pysocks flask requests
           python3 -c "import socks"
           echo "✅ PySocks ready."
-
-          echo "🧪 Quick SOCKS5 test..."
-          if curl -s --max-time 5 --socks5 127.0.0.1:10808 http://example.com >/dev/null; then
-            echo "✅ SOCKS5 test passed."
-          else
-            echo "❌ SOCKS5 test failed, but continuing..."
-          fi
 
           cat > relay.py << 'PYEOF'
           import sys, json, requests
@@ -249,62 +242,38 @@ jobs:
             exit 1
           fi
 
-      - name: 🌐 Start Cloudflare Tunnel (trycloudflare.com) with robust URL capture
+      - name: 🌐 Start Pinggy Tunnel and save FULL URL to tunnel.txt
         run: |
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared-linux-amd64
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
+          echo "✅ SSH key generated"
 
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
 
           while true; do
-            echo "🔁 Starting cloudflared tunnel..."
-            # اجرای تونل و ذخیره خروجی در فایل موقت
-            ./cloudflared-linux-amd64 tunnel --url http://localhost:8080 --no-autoupdate > /tmp/cf.log 2>&1 &
-            CFPID=$!
-            
-            # منتظر می‌مانیم تا آدرس trycloudflare.com ظاهر شود (حداکثر ۳۰ ثانیه)
-            COUNT=0
-            FULL_URL=""
-            while [ $COUNT -lt 30 ]; do
-              if grep -q 'trycloudflare.com' /tmp/cf.log; then
-                FULL_URL=$(grep -oP 'https://[^ ]+\.trycloudflare\.com' /tmp/cf.log | head -1)
-                break
+            echo "🔁 Starting Pinggy tunnel..."
+            SSH_CMD="ssh -p 443 -R 0:127.0.0.1:8080 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 qr@a.pinggy.io"
+            $SSH_CMD 2>&1 | while read line; do
+              echo "$line"
+              if echo "$line" | grep -q 'http://'; then
+                FULL_URL=$(echo "$line" | grep -oP 'http://\S+')
+                echo "🌎 Full URL: $FULL_URL"
+                
+                # ذخیره آدرس کامل (با http://) در tunnel.txt
+                echo "$FULL_URL" > tunnel.txt
+                git add tunnel.txt
+                git commit -m "Update tunnel address" || true
+                git push origin main || true
+                
+                curl -d "$FULL_URL" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
+                echo "✅ Full URL pushed to repo (and sent to ntfy)"
               fi
-              sleep 1
-              COUNT=$((COUNT+1))
-            done
-
-            if [ -n "$FULL_URL" ]; then
-              echo "🌎 Full URL: $FULL_URL"
-              
-              # ذخیره در tunnel.txt و push
-              echo "$FULL_URL" > tunnel.txt
-              git add tunnel.txt
-              git commit -m "Update tunnel address" || true
-              git push origin main || true
-              
-              curl -d "$FULL_URL" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
-              echo "✅ Full URL pushed to repo (and sent to ntfy)"
-              
-              # نگه داشتن تونل تا ۵۵ دقیقه بعد
-              sleep 3300
-              kill $CFPID 2>/dev/null
-            else
-              echo "❌ Could not get tunnel URL. Cloudflared logs:"
-              cat /tmp/cf.log
-              kill $CFPID 2>/dev/null
-            fi
-            
-            sleep 5
+            done &
+            SSH_PID=$!
+            sleep 3300  # ۵۵ دقیقه
+            kill $SSH_PID 2>/dev/null
+            sleep 2
           done &
-
-      - name: 📋 Dump Relay Log (after a short wait)
-        run: |
-          echo "⏳ Waiting 30 seconds for some requests to arrive..."
-          sleep 30
-          echo "📄 Relay log contents:"
-          cat relay.log || echo "(no log yet)"
 
       - name: ⏳ Keep Alive (6h max)
         run: |
