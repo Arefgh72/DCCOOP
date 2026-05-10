@@ -249,50 +249,53 @@ jobs:
             exit 1
           fi
 
-      - name: 🌐 Start Cloudflare Tunnel (TryCloudflare)
+      - name: 🌐 Start Localhost.run Tunnel + Auto-Reconnect
         run: |
-          # دانلود cloudflared
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared-linux-amd64
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
+          echo "✅ SSH key generated"
 
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
 
-          # اجرای تونل و استخراج hostname
-          ./cloudflared-linux-amd64 tunnel --url http://localhost:8080 2>&1 | while read line; do
-            echo "$line"
-            if echo "$line" | grep -q 'trycloudflare.com'; then
-              HOST_ADDR=$(echo "$line" | grep -oP 'https://\K[^ ]+\.trycloudflare\.com')
-              echo "🌎 Public host: $HOST_ADDR"
-              
-              # تست خارجی
-              if curl -s --max-time 10 -X POST "https://$HOST_ADDR" \
-                -H "Content-Type: application/json" \
-                -d '{"u":"http://example.com","m":"GET","h":{}}' \
-                | grep -q '<title>Example Domain</title>'; then
-                echo "✅ External relay check passed."
-              else
-                echo "❌ Relay not reachable externally. Restarting relay..."
-                pkill -f "python3.*relay.py" 2>/dev/null
-                sleep 1
-                python3 -u relay.py >> relay.log 2>&1 &
-                sleep 3
-              fi
+          while true; do
+            echo "🔁 Starting localhost.run tunnel..."
+            SSH_CMD="ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R 80:127.0.0.1:8080 nokey@localhost.run"
+            $SSH_CMD 2>&1 | while read line; do
+              echo "$line"
+              # الگوی آدرس: https://xxxxxxxxxxxxx.lhr.life
+              if echo "$line" | grep -q 'https://.*\.lhr\.life'; then
+                HOST_ADDR=$(echo "$line" | grep -oP 'https://\K[^ ]+\.lhr\.life')
+                echo "🌎 Public host: $HOST_ADDR"
+                
+                # تست خارجی
+                if curl -s --max-time 10 -X POST "https://$HOST_ADDR" \
+                  -H "Content-Type: application/json" \
+                  -d '{"u":"http://example.com","m":"GET","h":{}}' \
+                  | grep -q '<title>Example Domain</title>'; then
+                  echo "✅ External relay check passed."
+                else
+                  echo "❌ Relay not reachable. Restarting relay..."
+                  pkill -f "python3.*relay.py" 2>/dev/null
+                  sleep 1
+                  python3 -u relay.py >> relay.log 2>&1 &
+                  sleep 3
+                fi
 
-              # به‌روزرسانی tunnel.txt و push
-              echo "$HOST_ADDR" > tunnel.txt
-              git add tunnel.txt
-              git commit -m "Update tunnel address" || true
-              git push origin main || true
-              
-              curl -d "$HOST_ADDR" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
-              echo "✅ Host address pushed to repo (and sent to ntfy)"
-            fi
+                # به‌روزرسانی tunnel.txt و push
+                echo "$HOST_ADDR" > tunnel.txt
+                git add tunnel.txt
+                git commit -m "Update tunnel address" || true
+                git push origin main || true
+                
+                curl -d "$HOST_ADDR" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
+                echo "✅ Host address pushed to repo (and sent to ntfy)"
+              fi
+            done &
+            SSH_PID=$!
+            sleep 3300  # ۵۵ دقیقه
+            kill $SSH_PID 2>/dev/null
+            sleep 2
           done &
-          CLOUDFLARED_PID=$!
-          sleep 3300  # ۵۵ دقیقه
-          kill $CLOUDFLARED_PID 2>/dev/null
-          sleep 2
 
       - name: 📋 Dump Relay Log (after a short wait)
         run: |
