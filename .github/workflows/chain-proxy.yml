@@ -267,21 +267,7 @@ jobs:
                 HOST_ADDR=$(echo "$line" | grep -oP 'https://\K[^ ]+\.lhr\.life')
                 echo "🌎 Public host: $HOST_ADDR"
                 
-                # تست خارجی
-                if curl -s --max-time 10 -X POST "https://$HOST_ADDR" \
-                  -H "Content-Type: application/json" \
-                  -d '{"u":"http://example.com","m":"GET","h":{}}' \
-                  | grep -q '<title>Example Domain</title>'; then
-                  echo "✅ External relay check passed."
-                else
-                  echo "❌ Relay not reachable. Restarting relay..."
-                  pkill -f "python3.*relay.py" 2>/dev/null
-                  sleep 1
-                  python3 -u relay.py >> relay.log 2>&1 &
-                  sleep 3
-                fi
-
-                # به‌روزرسانی tunnel.txt و push
+                # به‌روزرسانی فایل tunnel.txt و push
                 echo "$HOST_ADDR" > tunnel.txt
                 git add tunnel.txt
                 git commit -m "Update tunnel address" || true
@@ -292,7 +278,7 @@ jobs:
               fi
             done &
             SSH_PID=$!
-            sleep 3300  # ۵۵ دقیقه
+            sleep 3300  # ۵۵ دقیقه (تونل localhost.run زمان‌بندی نامحدود داره، ولی ما هر ۵۵ دقیقه تمدید می‌کنیم)
             kill $SSH_PID 2>/dev/null
             sleep 2
           done &
