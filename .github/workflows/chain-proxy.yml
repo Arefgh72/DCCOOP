@@ -2,19 +2,19 @@ name: 🚀 Chain Proxy Gateway (VLESS + SS)
 
 on:
   schedule:
-    - cron: "0 */4 * * *"
-  workflow_dispatch:
+    - cron: "0 */4 * * *"   # هر ۴ ساعت
+  workflow_dispatch:          # اجرای دستی
 
 concurrency:
   group: chain-proxy-runner
-  cancel-in-progress: true
+  cancel-in-progress: true    # فقط یک رانر همزمان
 
 jobs:
   tunnel:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 360      # ۶ ساعت
     permissions:
-      contents: write
+      contents: write         # جهت push کردن tunnel.txt
 
     steps:
       - name: 📦 Checkout repository
@@ -242,37 +242,48 @@ jobs:
             exit 1
           fi
 
-      - name: 🌐 Start Pinggy Tunnel and save FULL URL to tunnel.txt
+      - name: 🌐 Start Bore Tunnel + Auto-Reconnect
         run: |
-          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
-          echo "✅ SSH key generated"
+          # دانلود ابزار bore
+          wget -q https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-unknown-linux-musl.tar.gz
+          tar -xzf bore-v0.5.2-x86_64-unknown-linux-musl.tar.gz
 
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
 
           while true; do
-            echo "🔁 Starting Pinggy tunnel..."
-            SSH_CMD="ssh -p 443 -R 0:127.0.0.1:8080 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 qr@a.pinggy.io"
-            $SSH_CMD 2>&1 | while read line; do
-              echo "$line"
-              if echo "$line" | grep -q 'http://'; then
-                FULL_URL=$(echo "$line" | grep -oP 'http://\S+')
-                echo "🌎 Full URL: $FULL_URL"
-                
-                # ذخیره آدرس کامل (با http://) در tunnel.txt
-                echo "$FULL_URL" > tunnel.txt
-                git add tunnel.txt
-                git commit -m "Update tunnel address" || true
-                git push origin main || true
-                
-                curl -d "$FULL_URL" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
-                echo "✅ Full URL pushed to repo (and sent to ntfy)"
+            echo "🔁 Starting Bore tunnel (localhost:8080 → bore.pub)..."
+            ./bore local 8080 --to bore.pub > bore.log 2>&1 &
+            BORE_PID=$!
+
+            # منتظر آدرس تونل (حداکثر ۳۰ ثانیه)
+            for i in $(seq 1 30); do
+              sleep 1
+              if grep -q 'listening at' bore.log; then
+                FULL_ADDR=$(grep -oP 'bore.pub:\d+' bore.log | head -1)
+                break
               fi
-            done &
-            SSH_PID=$!
-            sleep 3300  # ۵۵ دقیقه
-            kill $SSH_PID 2>/dev/null
-            sleep 2
+            done
+
+            if [ -n "$FULL_ADDR" ]; then
+              TUNNEL_URL="http://${FULL_ADDR}"
+              echo "🌎 Tunnel URL: $TUNNEL_URL"
+              # ذخیره در tunnel.txt و push به ریپازیتوری
+              echo "$TUNNEL_URL" > tunnel.txt
+              git add tunnel.txt
+              git commit -m "Update tunnel address" || true
+              git push origin main || true
+              # ارسال آدرس به ntfy (اختیاری)
+              curl -d "$TUNNEL_URL" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
+              echo "✅ Bore tunnel active. Sleeping 55 min..."
+              sleep 3300
+              kill $BORE_PID 2>/dev/null
+            else
+              echo "❌ Could not get Bore URL. Dumping log:"
+              cat bore.log
+              kill $BORE_PID 2>/dev/null
+            fi
+            sleep 5
           done &
 
       - name: ⏳ Keep Alive (6h max)
