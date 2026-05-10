@@ -191,7 +191,7 @@ jobs:
           ./xray/xray -c ./xray/config.json &
           sleep 3
 
-      - name: 🐍 Start Python relay (listening on 0.0.0.0)
+      - name: 🐍 Start Python relay (listening on all interfaces)
         run: |
           echo "📦 Installing PySocks..."
           pip3 install --user pysocks flask requests
@@ -250,7 +250,7 @@ jobs:
             exit 1
           fi
 
-      - name: 🌐 Start Pinggy Tunnel + Auto-Reconnect (with external health check)
+      - name: 🌐 Start Pinggy Tunnel + Auto-Reconnect (dynamic host forward)
         run: |
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
           echo "✅ SSH key generated"
@@ -258,7 +258,11 @@ jobs:
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
 
-          # تابع کمکی: تست سلامت رله از طریق آدرس خارجی
+          # تشخیص آدرس IP اصلی کانتینر
+          CONTAINER_IP=$(hostname -I | awk '{print $1}')
+          echo "🌐 Container IP: $CONTAINER_IP"
+
+          # تابع تست سلامت خارجی
           check_relay_external() {
             local host=$1
             curl -s --max-time 5 -X POST "http://$host" \
@@ -270,8 +274,8 @@ jobs:
           while true; do
             echo "🔁 Starting Pinggy tunnel..."
 
-            # SSH tunnel با فوروارد به 127.0.0.1:8080 (رله روی 0.0.0.0 گوش می‌ده)
-            SSH_CMD="ssh -p 443 -R 0:127.0.0.1:8080 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 qr@a.pinggy.io"
+            # این‌بار فوروارد به IP اصلی کانتینر، نه 127.0.0.1
+            SSH_CMD="ssh -p 443 -R 0:${CONTAINER_IP}:8080 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 qr@a.pinggy.io"
             $SSH_CMD 2>&1 | while read line; do
               echo "$line"
               if echo "$line" | grep -q 'http://'; then
@@ -279,7 +283,6 @@ jobs:
                 HOST_ADDR=${HTTP_URL#http://}
                 echo "🌎 Public host: $HOST_ADDR"
 
-                # تست خارجی: آیا رله از طریق تونل پاسخ می‌دهد؟
                 if check_relay_external "$HOST_ADDR"; then
                   echo "✅ External relay check passed."
                 else
@@ -296,7 +299,7 @@ jobs:
                   echo "✅ Relay restarted and externally reachable."
                 fi
 
-                # به‌روزرسانی فایل tunnel.txt و push
+                # به‌روزرسانی tunnel.txt و push
                 echo "$HOST_ADDR" > tunnel.txt
                 git add tunnel.txt
                 git commit -m "Update tunnel address" || true
@@ -308,10 +311,9 @@ jobs:
             done &
             SSH_PID=$!
 
-            # حلقهٔ نگهبان: هر ۲ دقیقه سلامت خارجی را چک کن
+            # نگهبان ۲ دقیقه‌ای
             while kill -0 $SSH_PID 2>/dev/null; do
               sleep 120
-              # برای چک کردن آدرس فعلی، آدرس را از tunnel.txt بخوانیم
               if [ -f tunnel.txt ]; then
                 TUNNEL_HOST=$(cat tunnel.txt)
                 if ! check_relay_external "$TUNNEL_HOST"; then
