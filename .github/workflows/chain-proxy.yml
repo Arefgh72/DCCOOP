@@ -250,7 +250,7 @@ jobs:
             exit 1
           fi
 
-      - name: 🌐 Start Pinggy Tunnel + Auto-Reconnect (dynamic host forward)
+      - name: 🌐 Start Serveo Tunnel + Auto-Reconnect
         run: |
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
           echo "✅ SSH key generated"
@@ -258,72 +258,43 @@ jobs:
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
 
-          # تشخیص آدرس IP اصلی کانتینر
-          CONTAINER_IP=$(hostname -I | awk '{print $1}')
-          echo "🌐 Container IP: $CONTAINER_IP"
-
-          # تابع تست سلامت خارجی
-          check_relay_external() {
-            local host=$1
-            curl -s --max-time 5 -X POST "http://$host" \
-              -H "Content-Type: application/json" \
-              -d '{"u":"http://example.com","m":"GET","h":{}}' \
-              | grep -q '<title>Example Domain</title>'
-          }
-
           while true; do
-            echo "🔁 Starting Pinggy tunnel..."
-
-            # این‌بار فوروارد به IP اصلی کانتینر، نه 127.0.0.1
-            SSH_CMD="ssh -p 443 -R 0:${CONTAINER_IP}:8080 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 qr@a.pinggy.io"
+            echo "🔁 Starting Serveo tunnel..."
+            SSH_CMD="ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R 80:127.0.0.1:8080 serveo.net"
             $SSH_CMD 2>&1 | while read line; do
               echo "$line"
-              if echo "$line" | grep -q 'http://'; then
-                HTTP_URL=$(echo "$line" | grep -oP 'http://\S+')
-                HOST_ADDR=${HTTP_URL#http://}
+              if echo "$line" | grep -q 'Forwarding HTTP'; then
+                # الگوی معمول: Forwarding HTTP traffic from https://xxxx.serveo.net
+                HOST_ADDR=$(echo "$line" | grep -oP 'https://\K[^ ]+')
                 echo "🌎 Public host: $HOST_ADDR"
-
-                if check_relay_external "$HOST_ADDR"; then
+                
+                # تست خارجی
+                if curl -s --max-time 5 -X POST "http://$HOST_ADDR" \
+                  -H "Content-Type: application/json" \
+                  -d '{"u":"http://example.com","m":"GET","h":{}}' \
+                  | grep -q '<title>Example Domain</title>'; then
                   echo "✅ External relay check passed."
                 else
-                  echo "❌ Relay not reachable externally. Restarting relay..."
+                  echo "❌ Relay not reachable via Serveo. Restarting relay..."
                   pkill -f "python3.*relay.py" 2>/dev/null
                   sleep 1
                   python3 -u relay.py >> relay.log 2>&1 &
                   sleep 3
-                  if ! check_relay_external "$HOST_ADDR"; then
-                    echo "❌ Still not reachable. Dumping relay.log:"
-                    cat relay.log
-                    exit 1
-                  fi
-                  echo "✅ Relay restarted and externally reachable."
                 fi
 
-                # به‌روزرسانی tunnel.txt و push
+                # به‌روزرسانی tunnel.txt و push به ریپازیتوری
                 echo "$HOST_ADDR" > tunnel.txt
                 git add tunnel.txt
                 git commit -m "Update tunnel address" || true
                 git push origin main || true
-
+                
                 curl -d "$HOST_ADDR" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
                 echo "✅ Host address pushed to repo (and sent to ntfy)"
               fi
             done &
             SSH_PID=$!
-
-            # نگهبان ۲ دقیقه‌ای
-            while kill -0 $SSH_PID 2>/dev/null; do
-              sleep 120
-              if [ -f tunnel.txt ]; then
-                TUNNEL_HOST=$(cat tunnel.txt)
-                if ! check_relay_external "$TUNNEL_HOST"; then
-                  echo "⚠️ Relay became unreachable. Killing tunnel for restart..."
-                  kill $SSH_PID 2>/dev/null
-                  break
-                fi
-              fi
-            done
-            wait $SSH_PID 2>/dev/null
+            sleep 3300
+            kill $SSH_PID 2>/dev/null
             sleep 2
           done &
 
