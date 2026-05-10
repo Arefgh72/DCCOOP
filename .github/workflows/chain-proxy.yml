@@ -249,7 +249,7 @@ jobs:
             exit 1
           fi
 
-      - name: 🌐 Start Localhost.run Tunnel + Auto-Reconnect
+      - name: 🌐 Start Localhost.run Tunnel + Auto-Reconnect (save full URL)
         run: |
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
           echo "✅ SSH key generated"
@@ -262,23 +262,23 @@ jobs:
             SSH_CMD="ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R 80:127.0.0.1:8080 nokey@localhost.run"
             $SSH_CMD 2>&1 | while read line; do
               echo "$line"
-              # الگوی آدرس: https://xxxxxxxxxxxxx.lhr.life
+              # استخراج آدرس کامل (https://...lhr.life)
               if echo "$line" | grep -q 'https://.*\.lhr\.life'; then
-                HOST_ADDR=$(echo "$line" | grep -oP 'https://\K[^ ]+\.lhr\.life')
-                echo "🌎 Public host: $HOST_ADDR"
+                FULL_URL=$(echo "$line" | grep -oP 'https://[^ ]+\.lhr\.life')
+                echo "🌎 Full URL: $FULL_URL"
                 
-                # به‌روزرسانی فایل tunnel.txt و push
-                echo "$HOST_ADDR" > tunnel.txt
+                # ذخیره آدرس کامل (با https://) در فایل tunnel.txt
+                echo "$FULL_URL" > tunnel.txt
                 git add tunnel.txt
                 git commit -m "Update tunnel address" || true
                 git push origin main || true
                 
-                curl -d "$HOST_ADDR" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
-                echo "✅ Host address pushed to repo (and sent to ntfy)"
+                curl -d "$FULL_URL" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
+                echo "✅ Full URL pushed to repo (and sent to ntfy)"
               fi
             done &
             SSH_PID=$!
-            sleep 3300  # ۵۵ دقیقه (تونل localhost.run زمان‌بندی نامحدود داره، ولی ما هر ۵۵ دقیقه تمدید می‌کنیم)
+            sleep 3300  # ۵۵ دقیقه
             kill $SSH_PID 2>/dev/null
             sleep 2
           done &
