@@ -29,7 +29,7 @@ jobs:
       - name: Install Xray
         run: |
           curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip xray.zip
+          unzip -o xray.zip
           chmod +x xray
           sudo mv xray /usr/local/bin/
 
