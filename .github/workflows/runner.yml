@@ -1,0 +1,48 @@
+name: GitHub Tunnel Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker_url:
+        description: 'Cloudflare Worker WebSocket URL (wss://...)'
+        required: true
+        default: 'wss://wild-paper-0725.aref-gha.workers.dev/ws'
+  schedule:
+    - cron: '0 */6 * * *' # Run every 6 hours
+
+jobs:
+  run-tunnel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install requests websocket-client
+
+      - name: Install Xray
+        run: |
+          curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip xray.zip
+          chmod +x xray
+          sudo mv xray /usr/local/bin/
+
+      - name: Test Proxies and Select Best
+        run: |
+          python proxy_tester.py
+
+      - name: Start Xray and Bridge
+        env:
+          WORKER_URL: ${{ github.event.inputs.worker_url || 'wss://wild-paper-0725.aref-gha.workers.dev/ws' }}
+        run: |
+          # Start Xray in the background
+          python xray_manager.py > xray.log 2>&1 &
+
+          # Start the bridge
+          python bridge.py
