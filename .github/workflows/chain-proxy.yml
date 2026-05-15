@@ -1,20 +1,20 @@
-name: 🚀 Chain Proxy Gateway (VLESS + SS)
+name: 🚀 Chain Proxy Gateway (WS Relay)
 
 on:
   schedule:
-    - cron: "0 */4 * * *"   # هر ۴ ساعت
-  workflow_dispatch:          # اجرای دستی
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: chain-proxy-runner
-  cancel-in-progress: true    # فقط یک رانر همزمان
+  cancel-in-progress: true
 
 jobs:
   tunnel:
     runs-on: ubuntu-latest
-    timeout-minutes: 360      # ۶ ساعت
+    timeout-minutes: 360
     permissions:
-      contents: write         # جهت push کردن tunnel.txt
+      contents: write
 
     steps:
       - name: 📦 Checkout repository
@@ -23,7 +23,7 @@ jobs:
       - name: 📦 Install base tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq wget unzip jq python3 python3-pip curl openssh-client
+          sudo apt-get install -y -qq wget unzip jq python3 python3-pip curl nodejs npm
 
       - name: ⬇️ Download Xray Core
         run: |
@@ -91,99 +91,53 @@ jobs:
         run: |
           python3 << 'PYEOF'
           import os, json, base64, sys
-
           url = os.environ.get("PROXY_URL", "")
-          if not url:
-              print("No proxy URL")
-              sys.exit(1)
-
+          if not url: sys.exit(1)
           config = {
-              "inbounds": [{
-                  "port": 10808,
-                  "listen": "127.0.0.1",
-                  "protocol": "socks",
-                  "settings": {"udp": True}
-              }],
-              "outbounds": []
+            "inbounds": [{"port": 10808, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
+            "outbounds": []
           }
-
           if url.startswith("vless://"):
-              rest = url[8:]
-              uuid = rest.split('@')[0]
-              host_port = rest.split('@')[1]
-              host = host_port.split(':')[0]
-              port = int(host_port.split(':')[1].split('?')[0])
-              print(f"Type: VLESS\nUUID: {uuid}\nServer: {host}:{port}")
-              config["outbounds"].append({
-                  "protocol": "vless",
-                  "settings": {
-                      "vnext": [{
-                          "address": host,
-                          "port": port,
-                          "users": [{"id": uuid, "encryption": "none"}]
-                      }]
-                  },
-                  "streamSettings": {
-                      "network": "ws",
-                      "security": "tls"
-                  }
-              })
+            rest = url[8:]
+            uuid = rest.split('@')[0]
+            host_port = rest.split('@')[1]
+            host = host_port.split(':')[0]
+            port = int(host_port.split(':')[1].split('?')[0])
+            print(f"VLESS: {host}:{port}")
+            config["outbounds"].append({
+              "protocol": "vless",
+              "settings": {"vnext": [{"address": host, "port": port, "users": [{"id": uuid, "encryption": "none"}]}]},
+              "streamSettings": {"network": "ws", "security": "tls"}
+            })
           elif url.startswith("ss://"):
-              if '@' in url[5:]:
-                  tmp = url[5:]
-                  userinfo, host_part = tmp.split('@', 1)
-                  try:
-                      dec = base64.b64decode(userinfo).decode()
-                      if ':' in dec:
-                          method, password = dec.split(':', 1)
-                      else:
-                          raise ValueError("No colon")
-                  except:
-                      if ':' in userinfo:
-                          method, password = userinfo.split(':', 1)
-                      else:
-                          print("Cannot parse userinfo")
-                          sys.exit(1)
-                  host = host_part.split(':')[0]
-                  port = int(host_part.split(':')[1].split('#')[0].split('?')[0])
-                  print(f"Type: Shadowsocks\nMethod: {method}\nServer: {host}:{port}")
-                  config["outbounds"].append({
-                      "protocol": "shadowsocks",
-                      "settings": {
-                          "servers": [{
-                              "address": host,
-                              "port": port,
-                              "method": method,
-                              "password": password
-                          }]
-                      }
-                  })
-              else:
-                  enc = url[5:]
-                  dec = base64.b64decode(enc).decode()
-                  method, rest = dec.split(':', 1)
-                  password, host_port = rest.split('@', 1)
-                  host = host_port.split(':')[0]
-                  port = int(host_port.split(':')[1])
-                  print(f"Type: Shadowsocks\nMethod: {method}\nServer: {host}:{port}")
-                  config["outbounds"].append({
-                      "protocol": "shadowsocks",
-                      "settings": {
-                          "servers": [{
-                              "address": host,
-                              "port": port,
-                              "method": method,
-                              "password": password
-                          }]
-                      }
-                  })
+            if '@' in url[5:]:
+              tmp = url[5:]
+              userinfo, host_part = tmp.split('@', 1)
+              try:
+                dec = base64.b64decode(userinfo).decode()
+                if ':' in dec: method, password = dec.split(':', 1)
+                else: raise ValueError
+              except:
+                if ':' in userinfo: method, password = userinfo.split(':', 1)
+                else: sys.exit(1)
+              host = host_part.split(':')[0]
+              port = int(host_part.split(':')[1].split('#')[0].split('?')[0])
+            else:
+              enc = url[5:]
+              dec = base64.b64decode(enc).decode()
+              method, rest = dec.split(':', 1)
+              password, host_port = rest.split('@', 1)
+              host = host_port.split(':')[0]
+              port = int(host_port.split(':')[1])
+            print(f"Shadowsocks: {host}:{port}")
+            config["outbounds"].append({
+              "protocol": "shadowsocks",
+              "settings": {"servers": [{"address": host, "port": port, "method": method, "password": password}]}
+            })
           else:
-              print("Unsupported protocol")
-              sys.exit(1)
-
+            sys.exit(1)
           with open("./xray/config.json", "w") as f:
-              json.dump(config, f, indent=2)
-          print("📄 Xray config created.")
+            json.dump(config, f, indent=2)
           PYEOF
 
       - name: 🚀 Start Xray Core
@@ -191,100 +145,69 @@ jobs:
           ./xray/xray -c ./xray/config.json &
           sleep 3
 
-      - name: 🐍 Start Python relay (listening on 0.0.0.0)
+      - name: 📡 Start Node.js relay (WebSocket to Worker)
         run: |
-          echo "📦 Installing PySocks..."
-          pip3 install --user pysocks flask requests
-          python3 -c "import socks"
-          echo "✅ PySocks ready."
+          cd $GITHUB_WORKSPACE
+          npm init -y
+          npm install ws socks-proxy-agent node-fetch
 
-          cat > relay.py << 'PYEOF'
-          import sys, json, requests
-          from flask import Flask, request, Response
+          cat > connect-worker.js << 'NODEEOF'
+          const WebSocket = require('ws');
+          const fetch = require('node-fetch');
+          const { SocksProxyAgent } = require('socks-proxy-agent');
 
-          app = Flask(__name__)
-          SOCKS_PROXY = "socks5h://127.0.0.1:10808"
+          const WORKER_URL = 'ws://wild-paper-0725.aref-gha.workers.dev/ws';
+          const SOCKS_PROXY = 'socks5://127.0.0.1:10808';
 
-          @app.route('/', methods=['POST'])
-          def relay():
-              data = request.get_json()
-              if not data:
-                  return {"e": "invalid json"}, 400
-              real_url = data.get('u')
-              method = data.get('m', 'GET').upper()
-              headers = data.get('h', {})
-              body = data.get('b', None)
-              proxies = dict(http=SOCKS_PROXY, https=SOCKS_PROXY)
-              try:
-                  if method == 'GET':
-                      resp = requests.get(real_url, headers=headers, proxies=proxies, timeout=30)
-                  else:
-                      resp = requests.request(method, real_url, headers=headers, data=body, proxies=proxies, timeout=30)
-                  return Response(resp.content, status=resp.status_code, headers=dict(resp.headers))
-              except Exception as e:
-                  print(f"Relay ERROR for {real_url}: {e}", file=sys.stderr)
-                  return {"e": str(e)}, 502
+          const agent = new SocksProxyAgent(SOCKS_PROXY);
 
-          if __name__ == '__main__':
-              import os
-              port = int(os.environ.get("PORT", 8080))
-              app.run(host='0.0.0.0', port=port, debug=False)
-          PYEOF
+          function connect() {
+            const ws = new WebSocket(WORKER_URL);
+            ws.on('open', () => console.log('Connected to Worker'));
+            ws.on('message', async (data) => {
+              try {
+                const req = JSON.parse(data);
+                const fetchOptions = {
+                  method: req.m,
+                  headers: req.h,
+                  agent: req.u.startsWith('https') ? agent : undefined,
+                };
+                if (req.b && req.m !== 'GET') {
+                  fetchOptions.body = req.b;
+                }
+                // حذف هدرهایی که node-fetch خودکار می‌سازد
+                if (req.h['host']) delete req.h['host'];
+                if (req.h['content-length']) delete req.h['content-length'];
 
-          python3 -u relay.py >> relay.log 2>&1 &
-          RELAY_PID=$!
-          sleep 3
-          if kill -0 $RELAY_PID 2>/dev/null; then
-            echo "✅ Relay running (PID $RELAY_PID)."
-          else
-            echo "❌ Relay failed to start!"
-            cat relay.log
-            exit 1
-          fi
+                const response = await fetch(req.u, fetchOptions);
+                const body = await response.text();
+                const respData = {
+                  status: response.status,
+                  headers: Object.fromEntries(response.headers.entries()),
+                  body: body
+                };
+                ws.send(JSON.stringify(respData));
+              } catch (err) {
+                ws.send(JSON.stringify({ status: 502, body: err.message }));
+              }
+            });
+            ws.on('close', () => {
+              console.log('Disconnected, retrying in 5s...');
+              setTimeout(connect, 5000);
+            });
+            ws.on('error', (err) => {
+              console.error('WebSocket error:', err.message);
+              ws.close();
+            });
+          }
 
-      - name: 🌐 Start Bore Tunnel + Auto-Reconnect
-        run: |
-          # دانلود ابزار bore
-          wget -q https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-unknown-linux-musl.tar.gz
-          tar -xzf bore-v0.5.2-x86_64-unknown-linux-musl.tar.gz
+          connect();
+          // نگه‌داشتن پردازه
+          setInterval(() => {}, 10000);
+          NODEEOF
 
-          git config user.email "actions@github.com"
-          git config user.name "GitHub Actions"
-
-          while true; do
-            echo "🔁 Starting Bore tunnel (localhost:8080 → bore.pub)..."
-            ./bore local 8080 --to bore.pub > bore.log 2>&1 &
-            BORE_PID=$!
-
-            # منتظر آدرس تونل (حداکثر ۳۰ ثانیه)
-            for i in $(seq 1 30); do
-              sleep 1
-              if grep -q 'listening at' bore.log; then
-                FULL_ADDR=$(grep -oP 'bore.pub:\d+' bore.log | head -1)
-                break
-              fi
-            done
-
-            if [ -n "$FULL_ADDR" ]; then
-              TUNNEL_URL="http://${FULL_ADDR}"
-              echo "🌎 Tunnel URL: $TUNNEL_URL"
-              # ذخیره در tunnel.txt و push به ریپازیتوری
-              echo "$TUNNEL_URL" > tunnel.txt
-              git add tunnel.txt
-              git commit -m "Update tunnel address" || true
-              git push origin main || true
-              # ارسال آدرس به ntfy (اختیاری)
-              curl -d "$TUNNEL_URL" https://ntfy.sh/arefgh_dccoop_tunnel_7x9k
-              echo "✅ Bore tunnel active. Sleeping 55 min..."
-              sleep 3300
-              kill $BORE_PID 2>/dev/null
-            else
-              echo "❌ Could not get Bore URL. Dumping log:"
-              cat bore.log
-              kill $BORE_PID 2>/dev/null
-            fi
-            sleep 5
-          done &
+          node connect-worker.js &
+          echo "✅ Node.js relay started"
 
       - name: ⏳ Keep Alive (6h max)
         run: |
