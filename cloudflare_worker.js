@@ -2,12 +2,6 @@
  * cloudflare_worker.js
  *
  * This worker acts as a relay between Google Apps Script and a GitHub Runner.
- *
- * NOTE: Cloudflare Workers are distributed. The WebSocket connection from the
- * GitHub Runner will only be available on the specific edge server it connected to.
- *
- * For a production-ready version that works globally, you should use
- * Cloudflare Durable Objects to store the WebSocket connection state.
  */
 
 let runnerWs = null;
@@ -16,6 +10,14 @@ const pendingRequests = new Map();
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    // Status check for human users
+    if (url.pathname === "/status") {
+      return new Response(JSON.stringify({
+        connected: !!runnerWs,
+        timestamp: new Date().toISOString()
+      }), { headers: { "Content-Type": "application/json" } });
+    }
 
     // Endpoint for the GitHub Runner to connect
     if (url.pathname === "/ws") {
@@ -57,7 +59,7 @@ export default {
       if (!runnerWs) {
         return new Response(JSON.stringify({
           e: "Runner not connected to this specific edge instance.",
-          note: "Try again in a few seconds or use Durable Objects for a stable connection."
+          note: "Workers are distributed. Re-run your GAS script or refresh."
         }), { status: 503, headers: { "Content-Type": "application/json" } });
       }
 
@@ -89,10 +91,15 @@ export default {
     return new Response(`
       <!DOCTYPE html>
       <html>
-        <head><title>Relay Active</title></head>
+        <head>
+          <title>Relay Active</title>
+          <meta http-equiv="refresh" content="10">
+        </head>
         <body style="font-family:sans-serif;max-width:600px;margin:40px auto;text-align:center">
           <h1>Relay Active</h1>
-          <p>Status: <b>${runnerWs ? "Connected" : "Disconnected"}</b> (on this node)</p>
+          <p>Status: <b style="color: ${runnerWs ? "green" : "red"}">${runnerWs ? "Connected" : "Disconnected"}</b></p>
+          <p><i>Refreshing every 10 seconds...</i></p>
+          <p><small>Note: Status is per-datacenter. If it shows disconnected but your runner is active, it might be connected to a different Cloudflare node.</small></p>
         </body>
       </html>
     `, { headers: { "Content-Type": "text/html" } });
