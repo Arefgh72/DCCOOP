@@ -40,6 +40,7 @@ jobs:
       - name: Start Xray and Bridge
         env:
           WORKER_URL: ${{ github.event.inputs.worker_url || 'wss://wild-paper-0725.aref-gha.workers.dev/ws' }}
+          PYTHONUNBUFFERED: 1
         run: |
           # Start Xray in the background
           python xray_manager.py > xray.log 2>&1 &
